@@ -11,25 +11,53 @@ export const config = {
 };
 
 const ioHandler = (req: NextApiRequest, res: NextApiResponseServerIo) => {
-  if (!res.socket.server.io) {
-    const path = "/api/socket/io";
-    const httpServer: NetServer = res.socket.server as any;
-    const io = new ServerIO(httpServer, {
-      path: path,
-      addTrailingSlash: true,
+  // Check if the socket server is already initialized
+  if (res.socket.server.io) {
+    console.log("Socket server already initialized");
+    res.end();
+    return;
+  }
+
+  const path = "/api/socket/io";
+  const httpServer: NetServer = res.socket.server as any;
+  const io = new ServerIO(httpServer, {
+    path: path,
+    addTrailingSlash: false,
+  });
+
+  // server-side connection handler
+  io.on("connection", (socket: Socket) => {
+    console.log("New socket connection");
+
+    socket.on("join_room", (roomName) => {
+      socket.join(roomName);
+      console.log(`User joined room: ${roomName}`);
+
+      io.to(roomName).except(socket.id).emit("welcome", { roomName });
+      console.log(`emiting welcone to: ${roomName}`);
+    });
+    socket.on("offer", (offer, roomName) => {
+      socket.to(roomName).emit("offer", offer);
     });
 
-    // server-side connection handler
-    io.on("connection", (socket: Socket) => {
-        socket.on("join_room", (roomName, done) => {
-          socket.join(roomName);
-          console.log(`User joined room: ${roomName}`);
-          socket.to(roomName).emit("welcome"); // Emit "welcome" to everyone in the room
-        });
-      });
+    socket.on("answer", (answer, roomName) => {
+      socket.to(roomName).emit("answer", answer);
+    });
 
-    res.socket.server.io = io;
-  }
+    socket.on("ice", (ice, roomName) => {
+      socket.to(roomName).emit("ice", ice);
+    });
+
+    // Add more event listeners as needed
+    socket.on("disconnect", () => {
+      console.log("Socket disconnected");
+    });
+  });
+
+  // Save the io server instance
+  res.socket.server.io = io;
+
+  // Important: send a response to complete the request
   res.end();
 };
 
