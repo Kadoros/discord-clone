@@ -64,7 +64,7 @@ const MemberIdPage = async ({
             />
             {searchParams.video && (
                 <MediaRoom 
-                    chatId={conversation.id}
+                    roomId={conversation.id}
                     video={true}
                     audio={true}
                 />
