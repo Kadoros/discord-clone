@@ -16,6 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
+import { Button } from "./ui/button";
 
 interface MediaRoomProps {
   roomId: string;
@@ -30,37 +31,23 @@ interface CameraOption {
 }
 
 export const MediaRoom = ({ roomId, video, audio }: MediaRoomProps) => {
-  const { user } = useUser();
   const { socket, isConnected } = useSocket();
 
+  // const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
   const [peerConnection, setPeerConnection] =
     useState<RTCPeerConnection | null>(null);
   const [dataChannel, setDataChannel] = useState<RTCDataChannel | null>(null);
+
   const [iceCandidateQueue, setIceCandidateQueue] = useState<RTCIceCandidate[]>(
     []
   );
-
-  const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
 
   const [cameraList, setCameraList] = useState<CameraOption[]>([]);
 
-  const handleJoinRoom = async () => {
-    // await startMediaStream();
-    await getMedia(); // Get user's media stream
-    await initWebRTC(); // Create WebRTC connection
-    socket.emit("join_room", roomId);
-  };
-
-  useEffect(() => {
-    if (socket && isConnected) {
-      handleJoinRoom(); // Trigger join room automatically
-    }
-  }, [socket, isConnected]);
-
-  const getCameras = async () => {
+  const getCameras = async (mediaStream: MediaStream) => {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const cameras = devices.filter((device) => device.kind === "videoinput");
@@ -77,38 +64,37 @@ export const MediaRoom = ({ roomId, video, audio }: MediaRoomProps) => {
     }
   };
 
-  const getMedia = async (deviceId?: string): Promise<void> => {
-    const constraints: MediaStreamConstraints = deviceId
-      ? { audio, video: { deviceId: { exact: deviceId } } }
-      : { audio, video };
+  const getMedia = async (deviceId?: string) => {
+    const initialConstraints = {
+      audio: true,
+      video: { facingMode: "user" }, // Default to user-facing camera
+    };
+    const cameraConstraints = {
+      audio: true,
+      video: { deviceId: { exact: deviceId } }, // Use specific camera by ID
+    };
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      if (!stream) {
-        console.log("no stream");
-      }
-      setMediaStream(stream);
+      const mediaStream = await navigator.mediaDevices.getUserMedia(
+        deviceId ? cameraConstraints : initialConstraints
+      );
+
+      
       if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
+        localVideoRef.current.srcObject = mediaStream;
+        
       }
-      await getCameras();
+      
+      
+      if (!deviceId) await getCameras(mediaStream);
+
+      return mediaStream;
     } catch (err) {
       console.error("Error accessing media devices:", err);
     }
   };
 
-  useEffect(() => {
-    if (mediaStream) {
-      initWebRTC();
-    }
-  }, [mediaStream]);
-
-  const initWebRTC = async () => {
-    if (!mediaStream) {
-      console.error("Stream is not available.");
-      return;
-    }
-
+  const initWebRTC = async (mediaStream:MediaStream) => {
     const pc = new RTCPeerConnection({
       iceServers: [
         {
@@ -119,101 +105,103 @@ export const MediaRoom = ({ roomId, video, audio }: MediaRoomProps) => {
         },
       ],
     });
+    pc.addEventListener("icecandidate", (data) => {
+      socket.emit("ice", data.candidate, roomId);
 
-    // Handling ICE candidates
-    pc.addEventListener("icecandidate", (event: RTCPeerConnectionIceEvent) => {
-      if (event.candidate) {
-        socket.emit("ice", event.candidate, roomId);
-      }
     });
-
-    // Handling added stream
     pc.addEventListener("track", (event: RTCTrackEvent) => {
       if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = event.streams[0];
+
+        const stream = event.streams[0];
+        remoteVideoRef.current.srcObject = stream;
       }
     });
+    console.log(mediaStream);
+    
 
-    // Adding tracks from the local stream to the peer connection
-    mediaStream.getTracks().forEach((track) => pc.addTrack(track, mediaStream));
+    mediaStream?.getTracks().forEach((track) => {
+      pc.addTrack(track, mediaStream);
+    });
 
-    // Saving the peer connection
     setPeerConnection(pc);
+    return pc;
   };
 
-  
+  const initCallSetup = async () => {
+    const mediaStream = await getMedia(); // Get user's media stream
+    const pc = await initWebRTC(mediaStream!);
 
-  const handleCameraChange = (deviceId: string) => {
-    getMedia(deviceId);
+
+    setupSocketListeners(pc);
   };
 
-  useEffect(() => {
-    if (socket && isConnected) {
-      // WebRTC signaling and connection management
-      socket.on("welcome", async () => {
-        console.log("welcome to ", roomId);
-        if (peerConnection) {
-          const dc = peerConnection.createDataChannel("dataChannel");
-          setDataChannel(dc);
-          const offer = await peerConnection.createOffer();
-          await peerConnection.setLocalDescription(offer);
-          socket.emit("offer", offer, roomId);
-        }
+  const initCall = async () => {
+    await initCallSetup();
+
+    socket.emit("join_room", roomId);
+  };
+
+  const setupSocketListeners = (pc: RTCPeerConnection) => {
+    socket.on("welcome", async () => {
+      if (!pc) {
+        console.error("welcome on : Peer connection is null");
+        return;
+      }
+      setDataChannel(pc?.createDataChannel("dataChannel"));
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit("offer", offer, roomId);
+    });
+    socket.on("offer", async (offer: RTCSessionDescriptionInit) => {
+      if (!pc) {
+        console.error("Peer connection is null");
+        return;
+      }
+      // Handle incoming offer and set up data channel
+      pc?.addEventListener("datachannel", (dataChannelEvent) => {
+        setDataChannel(dataChannelEvent.channel);
+        dataChannel?.addEventListener("message", (e) => console.log(e.data));
+        dataChannel?.addEventListener("open", () => dataChannel.send("hi"));
       });
 
-      socket.on("offer", async (offer: RTCSessionDescriptionInit) => {
-        // Handle incoming offer and set up data channel
-        peerConnection?.addEventListener("datachannel", (dataChannelEvent) => {
-          const dc = dataChannelEvent.channel;
-          setDataChannel(dc);
-        });
-        // Respond to offer with an answer
-        await peerConnection?.setRemoteDescription(offer);
-        const answer = await peerConnection?.createAnswer();
-        await peerConnection?.setLocalDescription(answer!);
-        socket.emit("answer", answer, roomId);
+      // Respond to offer with an answer
+      await pc.setRemoteDescription(offer);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit("answer", answer, roomId);
+    });
+    socket.on("answer", (answer: RTCSessionDescriptionInit) => {
+      if (!pc) {
+        console.error("answer on : Peer connection is null");
+        return;
+      }
+      // Set remote description from peer's answer
+      pc.setRemoteDescription(answer).then(() => {
+        // Process queued ICE candidates
+        iceCandidateQueue.forEach((candidate) =>
+          pc.addIceCandidate(candidate).catch(console.error)
+        );
+        setIceCandidateQueue([]);
       });
+    });
 
-      socket.on("answer", (answer: RTCSessionDescriptionInit) => {
-        try {
-          // Validate answer before setting
-          if (!answer.type || !answer.sdp) {
-            console.error("Invalid answer: Missing type or SDP", answer);
-            return;
-          }
-
-          peerConnection
-            ?.setRemoteDescription(answer)
-            .then(() => {
-              // Process queued ICE candidates
-              iceCandidateQueue.forEach((candidate) => {
-                peerConnection.addIceCandidate(candidate).catch(console.error);
-              });
-              setIceCandidateQueue([]);
-            })
-            .catch((error) => {
-              console.error("Error setting remote description:", error);
-              // Optionally, reset connection or retry
-            });
-        } catch (error) {
-          console.error("Exception in answer handling:", error);
-        }
-      });
-
-      socket.on("ice", (ice: RTCIceCandidateInit) => {
-        if (peerConnection?.remoteDescription) {
-          peerConnection.addIceCandidate(ice).catch(console.error);
-        } else {
-          setIceCandidateQueue((prevQueue) => [
-            ...prevQueue,
-            new RTCIceCandidate(ice),
-          ]);
-        }
-      });
-    } else {
-      console.log("Socket is not connected or not available");
-    }
-  }, [socket, isConnected, roomId, iceCandidateQueue, peerConnection]);
+    socket.on("ice", (ice: RTCIceCandidateInit) => {
+      if (!pc) {
+        console.error("ice on : Peer connection is null");
+        return;
+      }
+      // Handle incoming ICE candidates
+      if (pc.remoteDescription) {
+        pc.addIceCandidate(ice).catch(console.error);
+      } else {
+        setIceCandidateQueue((prevQueue) => [
+          ...prevQueue,
+          new RTCIceCandidate(ice),
+        ]);
+      }
+    });
+  };
 
   if (!isConnected) {
     return (
@@ -222,37 +210,41 @@ export const MediaRoom = ({ roomId, video, audio }: MediaRoomProps) => {
         <p className="text-xs text-zinc-500 dark:text-zinc-400">Loading...</p>
       </div>
     );
-  }
-
-  return (
-    <div className="flex flex-col items-center justify-center space-y-4 p-4">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <video
-          ref={localVideoRef}
-          autoPlay
-          muted
-          playsInline
-          className="rounded-lg border border-gray-300 shadow-md w-full h-64 bg-black"
-        />
-        <video
-          ref={remoteVideoRef}
-          autoPlay
-          playsInline
-          className="rounded-lg border border-gray-300 shadow-md w-full h-64 bg-black"
-        />
+  } else {
+    return (
+      <div className="flex flex-col items-center justify-center space-y-4 p-4">
+        <Button onClick={initCall}>Join</Button>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <video
+            ref={localVideoRef}
+            autoPlay
+            muted
+            playsInline
+            className="rounded-lg border border-gray-300 shadow-md w-full h-64 bg-black"
+          />
+          <p>local</p>
+          <video
+            ref={remoteVideoRef}
+            autoPlay
+            muted
+            playsInline
+            className="rounded-lg border border-gray-300 shadow-md w-full h-64 bg-black"
+          />
+          <p>remote</p>
+        </div>
+        <Select onValueChange={(value) => {}}>
+          <SelectTrigger>
+            <SelectValue placeholder="Select Camera" />
+          </SelectTrigger>
+          <SelectContent>
+            {cameraList.map((camera) => (
+              <SelectItem key={camera.deviceId} value={camera.deviceId}>
+                {camera.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
-      <Select onValueChange={(value) => handleCameraChange(value)}>
-        <SelectTrigger>
-          <SelectValue placeholder="Select Camera" />
-        </SelectTrigger>
-        <SelectContent>
-          {cameraList.map((camera) => (
-            <SelectItem key={camera.deviceId} value={camera.deviceId}>
-              {camera.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
-  );
+    );
+  }
 };
