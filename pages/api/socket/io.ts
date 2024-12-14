@@ -23,6 +23,8 @@ const ioHandler = (req: NextApiRequest, res: NextApiResponseServerIo) => {
   const io = new ServerIO(httpServer, {
     path: path,
     addTrailingSlash: false,
+    transports: ["websocket", "polling"],
+    // reconnectionAttempts: 5,
     cors: {
       origin: "https://wisto.vercel.app",
       methods: ["GET", "POST"],
