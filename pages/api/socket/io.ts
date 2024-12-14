@@ -23,6 +23,10 @@ const ioHandler = (req: NextApiRequest, res: NextApiResponseServerIo) => {
   const io = new ServerIO(httpServer, {
     path: path,
     addTrailingSlash: false,
+    cors: {
+      origin: "https://wisto.vercel.app",
+      methods: ["GET", "POST"],
+    },
   });
 
   // server-side connection handler
